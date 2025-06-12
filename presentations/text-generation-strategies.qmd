@@ -1,0 +1,598 @@
+---
+title: "An introduction to text generation"
+author: "Mac Misiura"
+date: today
+format:
+  revealjs:
+    self-contained: true
+    from: markdown+emoji
+    slide-number: true
+    execute:
+      echo: true
+---
+
+# :hugs: Hugging Face and text generation
+
+## :smoking: Pipelines 
+
+Hugging Face has two main pipelines that can be used for prompting:
+
+:::: columns
+
+::: {.column width=50%}
+__decoder models__:
+```{python}
+#| code-line-numbers: "|1,2|5|8|9|10|13"
+#| code-overflow: scroll
+import torch
+from transformers import pipeline
+
+# fix random seed
+torch.manual_seed(42)
+
+# specify the model and basic prompt
+checkpoint = "distilgpt2"
+generator = pipeline("text-generation", model=checkpoint) 
+prompt = 'The sky is'
+
+# generate text
+generator(prompt, max_length = 20)
+```
+:::
+
+::: {.column width=50%}
+__encoder-decoder models__:
+```{python}
+#| code-line-numbers: "|1,2|5|8|9|10|13"
+#| code-overflow: scroll
+import torch
+from transformers import pipeline
+
+# fix random seed
+torch.manual_seed(42)
+
+# specify the model and basic prompt
+checkpoint = "google/flan-t5-small"
+generator = pipeline("text2text-generation", model=checkpoint) 
+prompt = 'Complete the rest of the sentence: The sky is'
+
+# generate text
+generator(prompt, max_length = 20)
+```
+:::
+
+::::
+
+## :car: Auto- classes
+
+Hugging Face also has a set of __Auto-__ classes that can be used for prompting. For example, using the __AutoModelForSeq2SeqLM__ class for encoder-decoder models:
+
+```{python}
+#| code-line-numbers: "|1|4|5|6|7|10|11|14"
+#| code-overflow: scroll
+
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+
+# specify the model and basic prompt
+checkpoint = "google/flan-t5-small"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+generator = AutoModelForSeq2SeqLM.from_pretrained(checkpoint)
+prompt = 'Complete the rest of the sentence: The sky is'
+
+# pass through the model
+input_ids = tokenizer(prompt, return_tensors="pt").input_ids
+outputs = generator.generate(input_ids, max_length=20)
+
+# display results
+print(tokenizer.decode(outputs[0], skip_special_tokens=True))
+```
+
+A list of the available __Auto-__ classes can be found [here](https://huggingface.co/docs/transformers/model_doc/auto)
+
+## :oncoming_automobile: Specific classes
+
+Some models have their own specific classes that can be used for prompting. For example, the __T5ForConditionalGeneration__ class for T5 models:
+
+```{python}
+#| code-line-numbers: "|1|4|5|6|7|10|11|14"
+#| code-overflow: scroll
+
+from transformers import T5Tokenizer, T5ForConditionalGeneration
+
+# specify the model and basic prompt
+checkpoint = "google/flan-t5-small"
+tokenizer = T5Tokenizer.from_pretrained(checkpoint)
+generator = T5ForConditionalGeneration.from_pretrained(checkpoint)
+prompt = 'Complete the rest of the sentence: The sky is'
+
+# pass through the model
+input_ids = tokenizer(prompt, return_tensors="pt").input_ids
+outputs = generator.generate(input_ids, max_length=20)
+
+# display results
+print(tokenizer.decode(outputs[0], skip_special_tokens=True))
+```
+
+While these classes may be more optimised for specific models, they are not as flexible as the __Auto-__ classes. 
+
+## :house: Base vs instruct models
+
+Most of the recent models released on Hugging Face Hub come in two flavours:
+
+- __base__: these models can be useful for use cases based on text generation conditioned on a basic prompt; they typically serve as a starting point for instruction fine-tuning
+- __instruct__: these models can be useful for use cases based on conversational / instruction following use cases
+
+## :money_with_wings: Strategies for generating text {.scrollable}
+
+You may see parameters like `num_beams`, `do_sample`, etc. specified in Hugging Face pipelines.  These are inference configurations.
+
+LLMs work by predicting (generating) the next token, then the next, and so on.  The goal is to generate a high probability sequence of tokens, which is essentially a search through the (enormous) space of potential sequences.
+
+To do this search, LLMs use one of two main methods:
+
+- __Search__: Given the tokens generated so far, pick the next most likely token in a search
+   
+   - __Greedy search__ (default): Pick the single next most likely token in a greedy search
+   - __Beam search__: Greedy search can be extended via beam search, which searches down several sequence paths, via the parameter `num_beams`
+
+- __Sampling__: Given the tokens generated so far, pick the next token by sampling from the predicted distribution of tokens
+
+   - __Top-k sampling__: The parameter `top_k` modifies sampling by limiting it to the `k` most likely tokens
+   - __Top-p sampling__: The parameter `top_p` modifies sampling by limiting it to the most likely tokens up to probability mass `p`
+
+You can toggle between search and sampling via parameter `do_sample`
+
+For more background on search and sampling, see [this Hugging Face blog post](https://huggingface.co/blog/how-to-generate).
+
+## :mag: Greedy search {.scrollable}
+
+![](figures/greedy_search.png){fig-align="center" height="500"}
+
+__Greedy search__: picks token with the highest probability at each step $t$, i.e. 
+
+$$w_{t} = \text{argmax} P(w_{t} | w_{1}, \dots, w_{t-1})$$
+
+The main limitation of this approach is that it is prone to missing high probability tokens hidden behind low probability tokens
+
+```{python}
+#| code-line-numbers: "|1,2|5|8|9|10|13"
+#| code-overflow: scroll
+import torch
+from transformers import pipeline
+
+# fix random seed
+torch.manual_seed(42)
+
+# specify the model and basic prompt
+checkpoint = "distilgpt2"
+generator = pipeline("text-generation", model=checkpoint) 
+prompt = 'The sky is'
+
+# generate text
+generator(prompt, max_length = 20)
+```
+
+## :mag: Beam search {.scrollable}
+
+![](figures/beam_search.png){fig-align="center" height="500"}
+
+__Beam search__: keeps the most likely `num_beams` of hypotheses at each step $t$ and only selects the complete sequence with the highest probability at the end
+
+```{python}
+#| code-line-numbers: "|1,2|5|8|9|10|13-18"
+#| code-overflow: scroll
+import torch
+from transformers import pipeline
+
+# fix random seed
+torch.manual_seed(42)
+
+# specify the model and basic prompt
+checkpoint = "distilgpt2"
+generator = pipeline("text-generation", model=checkpoint) 
+prompt = 'The sky is'
+
+# generate text
+generator(
+    prompt, 
+    max_length = 20, 
+    num_beams=5, 
+    early_stopping=True
+)
+```
+
+However, beam search suffers from repetitive generation, which could be mitigated with e.g. 
+
+- _n-gram penalty_
+
+```{python}
+#| code-line-numbers: "|1,2|5|8|9|10|13-19"
+#| code-overflow: scroll
+import torch
+from transformers import pipeline
+
+# fix random seed
+torch.manual_seed(42)
+
+# specify the model and basic prompt
+checkpoint = "distilgpt2"
+generator = pipeline("text-generation", model=checkpoint) 
+prompt = 'The sky is'
+
+# generate text
+generator(
+    prompt,
+    max_length = 20, 
+    num_beams=5, 
+    early_stopping=True, 
+    no_repeat_ngram_size=1
+)
+```
+
+- _repetition penalty_
+
+```{python}
+#| code-line-numbers: "|1,2|5|8|9|10|13-19"
+#| code-overflow: scroll
+import torch
+from transformers import pipeline
+
+# fix random seed
+torch.manual_seed(42)
+
+# specify the model and basic prompt
+checkpoint ="distilgpt2"
+generator = pipeline("text-generation", model=checkpoint) 
+prompt = 'The sky is'
+
+# generate text
+generator(
+    prompt,
+    max_length = 20, 
+    num_beams=5, 
+    early_stopping=True, 
+    repetition_penalty=1.5
+)
+```
+
+## :mag: Basic sampling {.scrollable}
+
+In its most basic form, sampling means randomly picking the next token based on a conditional probability distribution
+
+$$w_{t} \sim P(w_ | w_{1}, \dots, w_{t-1})$$
+
+```{python}
+#| code-line-numbers: "|1,2|5|8|9|10|13-18"
+#| code-overflow: scroll
+import torch
+from transformers import pipeline
+
+# fix random seed
+torch.manual_seed(42)
+
+# specify the model and basic prompt
+checkpoint = "distilgpt2"
+generator = pipeline("text-generation", model=checkpoint) 
+prompt = 'The sky is'
+
+# generate text
+generator(
+    prompt,
+    max_length = 20, 
+    do_sample=True,
+    top_k=0
+)
+```
+
+To tweak the _sharpness_ of the sampling distribution, you can use the `temperature` parameter
+
+```{python}
+#| code-line-numbers: "|1,2|5|8|9|10|13-19"
+#| code-overflow: scroll
+import torch
+from transformers import pipeline
+
+# fix random seed
+torch.manual_seed(42)
+
+# specify the model and basic prompt
+checkpoint = "distilgpt2"
+generator = pipeline("text-generation", model=checkpoint) 
+prompt = 'The sky is'
+
+# generate text
+generator(
+    prompt,
+    max_length = 20, 
+    do_sample=True,
+    top_k=0,
+    temperature=0.5
+)
+```
+
+Setting temperature close to 0 is expected to turn generation into a more deterministic process, whereas setting temperature close to 1 is expected to make generation more random
+
+## :mag: Top-k sampling and top-p sampling {.scrollable}
+
+In this type of sampling, $k$ most likely tokens are filtered and the probability mass is redistributed among only those $k$ tokens
+
+```{python}
+#| code-line-numbers: "|1,2|5|8|9|10|13-18"
+#| code-overflow: scroll
+import torch
+from transformers import pipeline
+
+# fix random seed
+torch.manual_seed(42)
+
+# specify the model and basic prompt
+checkpoint = "distilgpt2"
+generator = pipeline("text-generation", model=checkpoint) 
+prompt = 'The sky is'
+
+# generate text
+generator(
+    prompt,
+    max_length = 20, 
+    do_sample=True,
+    top_k=50,
+)
+```
+
+Instead of restricting to a fixed number of tokens, you can also restrict to a fixed probability mass
+
+```{python}
+#| code-line-numbers: "|1,2|5|8|9|10|13-19"
+#| code-overflow: scroll
+import torch
+from transformers import pipeline
+
+# fix random seed
+torch.manual_seed(42)
+
+# specify the model and basic prompt
+checkpoint = "distilgpt2"
+generator = pipeline("text-generation", model=checkpoint) 
+prompt = 'The sky is'
+
+# generate text
+generator(
+    prompt,
+    max_length = 20, 
+    do_sample=True,
+    top_k=0,
+    top_p=0.95
+)
+```
+
+The aforementioned sampling strategies could also be combined: 
+
+```{python}
+#| code-line-numbers: "|1,2|5|8|9|10|13-19"
+#| code-overflow: scroll
+import torch
+from transformers import pipeline
+
+# fix random seed
+torch.manual_seed(42)
+
+# specify the model and basic prompt
+checkpoint = "distilgpt2"
+generator = pipeline("text-generation", model=checkpoint) 
+prompt = 'The sky is'
+
+# generate text
+generator(
+    prompt,
+    max_length = 20, 
+    do_sample=True,
+    top_k=10,
+    top_p=0.95
+)
+```
+
+A list of all sampling and search strategies available on Hugging Face can be found [here](https://huggingface.co/docs/transformers/main/generation_strategies)
+
+## :warning: Most common pitfalls {.scrollable}
+
+[Hugging Face]() lists the following most common pitfalls when generating text:
+
+- generated text is too short / long; `max_new_tokens` is the recommended parameter to control the length of the generated text
+- incorrect generation mode: `do_sample` is the recommended parameter to control the generation mode
+- wrong padding side: for decoder models, inputs must be left padded; it is prudent to set `padding_side=left` within the tokenizer and `padding=True` when passing the input to the model
+- wrong prompt: some models expect a certain prompt format, e.g. a [chat template](https://huggingface.co/docs/transformers/main/chat_templating); it is prudent to check the model documentation for the expected prompt format
+
+# Diving Deeper: Understanding Text Generation Models
+
+## Model Architecture: Behind the Scenes of GPT-2
+
+Let's explore how transformer-based models like GPT-2 actually work to generate text:
+
+```{python}
+#| code-overflow: scroll
+#| output-location: slide
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+
+# Load a small GPT-2 model
+model_name = "distilgpt2"  # We use the smallest GPT-2 variant (124M parameters)
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(model_name)
+
+# 1. Understanding the tokenization process
+text = "The cat sat on the"
+input_ids = tokenizer(text, return_tensors="pt").input_ids
+print(f"Input text: '{text}'")
+print(f"Tokenized into: {input_ids}")
+print(f"Decoded tokens: {[tokenizer.decode([id]) for id in input_ids[0]]}")
+```
+
+## Token Embeddings: From Tokens to Vectors
+
+Each token is converted into a high-dimensional vector. Let's visualize this process:
+
+```{python}
+#| code-overflow: scroll
+#| output-location: slide
+# Get the embedding layer from the model
+embeddings = model.transformer.wte(input_ids)
+print(f"Embedding shape: {embeddings.shape}") 
+# This shows [batch_size, sequence_length, embedding_dim]
+
+# Visualize the first token's embedding
+plt.figure(figsize=(10, 4))
+sns.heatmap(embeddings[0, 0, :50].detach().reshape(5, 10), annot=True, cmap="viridis")
+plt.title("First 50 dimensions of embedding for token: " + tokenizer.decode(input_ids[0][0]))
+plt.xlabel("Embedding Dimension")
+plt.ylabel("Embedding Dimension")
+plt.show()
+```
+
+## Attention Mechanism: How Models Focus
+
+The heart of transformer models is the attention mechanism. Let's see it in action:
+
+```{python}
+#| code-overflow: scroll
+#| output-location: slide
+# Get attention values
+with torch.no_grad():
+    outputs = model(input_ids, output_attentions=True)
+    attentions = outputs.attentions
+
+# Visualize attention in the first layer, first head
+attention_matrix = attentions[0][0, 0].detach().numpy()
+tokens = [tokenizer.decode([id]) for id in input_ids[0]]
+
+plt.figure(figsize=(10, 8))
+sns.heatmap(attention_matrix, xticklabels=tokens, yticklabels=tokens, cmap="viridis", annot=True)
+plt.title("Attention Map (Layer 1, Head 1)")
+plt.xlabel("Key Tokens")
+plt.ylabel("Query Tokens")
+plt.show()
+```
+
+## Token Prediction: Generating the Next Word
+
+Now let's see how the model predicts the next token:
+
+```{python}
+#| code-overflow: scroll
+#| output-location: slide
+# Get logits (raw prediction scores) for the next token
+with torch.no_grad():
+    outputs = model(input_ids)
+    next_token_logits = outputs.logits[:, -1, :]
+
+# Convert logits to probabilities
+next_token_probs = torch.softmax(next_token_logits, dim=-1)
+
+# Get the top 5 predictions
+topk = 5
+top_k_probs, top_k_indices = torch.topk(next_token_probs, topk, dim=-1)
+
+# Display the top 5 predicted tokens and their probabilities
+print("\nTop 5 predicted next tokens:")
+for i in range(topk):
+    token = tokenizer.decode([top_k_indices[0, i]])
+    prob = top_k_probs[0, i].item() * 100
+    print(f"{i+1}. '{token}' with probability {prob:.2f}%")
+```
+
+## Generating Complete Sentences
+
+Let's put it all together and see how text generation works step by step:
+
+```{python}
+#| code-overflow: scroll
+#| output-location: slide
+def generate_step_by_step(prompt, max_length=20):
+    input_ids = tokenizer(prompt, return_tensors="pt").input_ids
+    generated_text = prompt
+    
+    print(f"Starting with: '{prompt}'")
+    
+    for _ in range(max_length):
+        # Get predictions
+        with torch.no_grad():
+            outputs = model(input_ids)
+            next_token_logits = outputs.logits[:, -1, :]
+        
+        # Get probabilities
+        next_token_probs = torch.softmax(next_token_logits, dim=-1)
+        
+        # Sample from the distribution
+        next_token = torch.multinomial(next_token_probs, num_samples=1)
+        
+        # Add the predicted token to the sequence
+        input_ids = torch.cat([input_ids, next_token], dim=-1)
+        
+        # Convert to text
+        new_text = tokenizer.decode(input_ids[0])
+        
+        # Get just the newly added token
+        new_token = tokenizer.decode([next_token[0, 0]])
+        
+        # Get the probability of the chosen token
+        chosen_prob = next_token_probs[0, next_token[0, 0]].item() * 100
+        
+        print(f"Added: '{new_token}' (probability: {chosen_prob:.2f}%)")
+        print(f"Text so far: '{new_text}'")
+        
+        # Break if we encounter the end of sequence token
+        if next_token[0, 0] == tokenizer.eos_token_id:
+            break
+            
+    return new_text
+
+# Generate text step by step
+generated = generate_step_by_step("The cat sat on the")
+```
+
+## Sampling Strategies: Controlling Text Generation
+
+Different sampling methods can dramatically change the output:
+
+```{python}
+#| code-overflow: scroll
+#| output-location: slide
+def compare_sampling_methods(prompt):
+    # Initialize the models and tokenizers
+    tokenizer = AutoTokenizer.from_pretrained("distilgpt2")
+    model = AutoModelForCausalLM.from_pretrained("distilgpt2")
+    
+    # Different generation methods
+    methods = {
+        "Greedy": {"do_sample": False},
+        "Temperature (0.7)": {"do_sample": True, "temperature": 0.7},
+        "Top-k (50)": {"do_sample": True, "top_k": 50},
+        "Top-p (0.9)": {"do_sample": True, "top_p": 0.9},
+        "Top-k (50) + Top-p (0.9)": {"do_sample": True, "top_k": 50, "top_p": 0.9}
+    }
+    
+    print(f"Prompt: '{prompt}'")
+    print("-" * 50)
+    
+    # Run each method
+    for name, params in methods.items():
+        input_ids = tokenizer(prompt, return_tensors="pt").input_ids
+        
+        # Set a random seed for reproducibility in sampling methods
+        torch.manual_seed(42)
+        
+        # Generate
+        outputs = model.generate(
+            input_ids, 
+            max_length=30,
+            **params
+        )
+        
+        text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        print(f"{name}:\n{text}\n")
+
+# Compare different sampling methods
+compare_sampling_methods("The cat sat on the")
+```
