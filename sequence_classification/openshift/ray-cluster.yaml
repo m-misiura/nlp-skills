@@ -1,0 +1,49 @@
+apiVersion: ray.io/v1
+kind: RayCluster
+metadata:
+  name: raycluster-simple
+spec:
+  rayVersion: "2.9.3"
+  headGroupSpec:
+    serviceType: ClusterIP
+    rayStartParams:
+      dashboard-host: "0.0.0.0"
+    template:
+      spec:
+        containers:
+        - name: ray-head
+          image: quay.io/rh-ee-mmisiura/ray:latest-py312-gpu
+          imagePullPolicy: Always
+          resources:
+            limits:
+              cpu: "1"
+              memory: "10Gi"
+            requests:
+              cpu: "1"
+              memory: "10Gi"
+          envFrom:
+            - secretRef:
+                name: aws-creds
+  workerGroupSpecs:
+  - replicas: 2   # <--- 2 workers, each with 1 GPU
+    minReplicas: 2
+    maxReplicas: 2
+    rayStartParams: {}
+    template:
+      spec:
+        containers:
+        - name: ray-worker
+          image: quay.io/rh-ee-mmisiura/ray:latest-py312-gpu
+          imagePullPolicy: Always
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+              # cpu: "1"
+              # memory: "8Gi"
+            requests:
+              nvidia.com/gpu: 1
+              # cpu: "1"
+              # memory: "8Gi"
+          envFrom:
+            - secretRef:
+                name: aws-creds
