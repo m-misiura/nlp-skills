@@ -1,0 +1,400 @@
+---
+title: "NeMo on Openshift"
+author: "Mac Misiura"
+date: today
+format:
+  revealjs:
+    self-contained: true
+    from: markdown+emoji
+    slide-number: true
+    execute:
+      echo: true
+---
+
+## NeMo on Openshift
+
+As of RHOAI 3.2, there is a NeMo controller within the TrustyAI Operator, which is bundled with the RHOAI Operator. This controller manages the lifecycle of NeMo services. 
+
+This feature is 
+
+- DP in RHOAI 3.2, 
+- TP in RHOAI 3.3 
+- (should be GA) in RHOAI 3.4 (:pray:)
+
+## NeMo service and API endpoints
+NeMo service has two key API endpoints:
+
+- `v1/chat/completion`: OpenAI-compatible chat completion endpoint, which can be used as a drop-in replacement for OpenAI API
+- `v1/guardrails/checks`: endpoint to check if messages (assistant / tool / user) are safe based on the defined guardrails
+
+## NeMo Controller and CRD
+
+The CRD for NeMo is defined as `NemoGuardrails` and has the following API group and version: `trustyai.opendatahub.io/v1alpha`
+
+The controller would create the following resources:
+
+```yaml
+NemoGuardrails CR
+  |-- Deployment
+  |-- Service
+  |-- Route 
+  |-- ServiceAccount + ClusterRoleBinding (if auth enabled)
+  |-- CA Bundle ConfigMap (auto-discovered)
+```
+
+## NeMo Controller and CRD
+
+The NeMo Guardrails CR can look like this:
+
+```yaml
+apiVersion: trustyai.opendatahub.io/v1alpha1
+kind: NemoGuardrails
+metadata:
+  annotations:
+    security.opendatahub.io/enable-auth: 'true' # usual annotation to enable auth
+  name: <INSTANCE_NAME> # name of the NeMo instance, e.g. "nemo-guardrails"
+spec:
+  nemoConfigs:
+    - name: <CONFIG_NAME> # name of the guardrails configuration, e.g. "safety-checks"
+      configMaps:
+        - <CONFIG_MAP_NAME> # reference to the ConfigMap containing the guardrails configuration
+      default: true # one config must be marked as the default
+    - name: <CONFIG_NAME_2> # you can have multiple configs, e.g. "toxicity-checks"
+      configMaps:
+        - <CONFIG_MAP_NAME_2>
+  replicas: 2 # number of replicas corresponding to the number of pods
+  env: # environment variables to be passed to the NeMo container
+    - name: <ENV_VAR_NAME> # e.g. OTEL_EXPORTER_OTLP_ENDPOINT
+      value: <ENV_VAR_VALUE>
+  caBundleConfig: # optional: custom CA bundle for TLS connections
+    configMapName: <CA_CONFIGMAP_NAME>
+```
+
+## What env vars can I set?
+
+A user is likely to consider the following categories of environment variables when configuring the NeMo service:
+
+- server configuration, e.g. `PORT`, etc
+- llm provider configuration, e.g. `MAIN_MODEL_ENGINE`, `OPENAI_API_KEY`, etc
+- otel, e.g. `OTEL_EXPORTER_OTLP_ENDPOINT`, etc
+- model caching, e.g. `HF_HOME`, `TRANSFORMERS_CACHE`, etc
+- cors, e.g. `NEMO_GUARDRAILS_SERVER_ENABLE_CORS`, etc
+
+## What env vars can I set? {.scrollable}
+
+The `env` field in the NemoGuardrails CR uses the standard Kubernetes `EnvVar` type,
+supporting both plain values and secret/configmap references.
+
+- plain value
+
+```yaml
+env:
+  - name: MAIN_MODEL_ENGINE
+    value: "openai"
+```
+
+- from secret
+
+```yaml
+env:
+  - name: OPENAI_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: openai-api-key-secret
+        key: api_key
+```
+
+- from configmap
+
+```yaml
+env:
+  - name: MAIN_MODEL_BASE_URL
+    valueFrom:
+      configMapKeyRef:
+        name: model-config
+        key: base_url
+
+```
+
+you cannot currently use: 
+
+```yaml
+envFrom:
+  - secretRef:
+      name: my-secret
+```
+
+## ConfigMap for guardrails configuration {.smaller}
+
+The guardrails configuration is passed to the NeMo service via a ConfigMap, which is referenced in the `configMaps` field of the `NemoGuardrails` CR.
+
+This ConfigMap can contain the following files:
+
+- config.yaml | Model, instructions, and which rails to activate 
+- *.co | Colang files — define guardrail flows (what to check and how to respond) 
+- actions.py | Custom Python actions called by flows (e.g. call an external API) 
+
+## Minimal config (just a model + instruction)
+
+No rails, no Colang, no actions — the LLM responds freely:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config-plain-model
+data:
+  config.yaml: |
+    models:
+        - type: main
+          engine: openai
+          parameters:
+            openai_api_base: ${LLM_API_BASE}
+            model_name: ${LLM_MODEL_NAME}
+            api_key: ${LLM_API_KEY}
+
+    instructions:
+      - type: general
+        content: |
+          You are a helpful assistant specialized exclusively in lemons.
+          Respond only with information that is directly about lemons or lemon-related topics.
+          If the user request is not about lemons, kindly refuse.
+          Answer in a maximum of 10 sentences.
+```
+
+## Minimal config (just a model + instruction) {.smaller}
+
+```bash
+curl -s "https://$NEMO_ROUTE/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "'"$LLM_MODEL_NAME"'",
+    "messages": [{"role":"user","content":"Tell me about oranges"}],
+    "guardrails": {"config_id": "plain-model"}
+  }' | jq
+```
+
+should yield something like this:
+
+```json
+{
+  "id": "chatcmpl-03daef62-cf5b-43a4-a1c0-0166d5140f9b",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "I'm sorry, but I can only provide information about lemons. How can I assist you with something related to lemons?",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1776432549,
+  "model": "Mistral-Small-24B-W8A8",
+  "object": "chat.completion",
+  "guardrails": {
+    "config_id": "plain-model"
+  }
+}
+```
+:
+
+## Adding input/output rails
+
+```yaml
+# config.yaml
+models:
+  - type: main
+    engine: openai
+    model: <LLM_MODEL_NAME/v1>
+instructions:
+  - type: general
+    content: |
+      You are a helpful assistant.
+rails:
+  input:
+    flows:
+      - check forbidden words    # run before LLM sees the message
+  output:
+    flows:
+      - check output length      # run before response is sent to user
+```
+
+The flow names reference Colang flows defined in .co files.
+
+## What is Colang {.scrollable}
+
+Colang is a domain-specific language for defining conversational guardrails. It defines flows — step-by-step checks that decide whether to allow or block a message.
+
+
+```yaml
+# rails.co
+define flow check forbidden words
+  $result = execute check_forbidden_words
+  if $result.status == "blocked"
+    bot inform cannot answer
+    stop
+define bot inform cannot answer
+  "I'm sorry, I can't respond to that."
+```
+
+You can generally build things like this:
+
+- define flow: a named guardrail check
+- execute: calls a Python action
+- stop: blocks the message
+- define bot: predefined bot response
+
+## Custom actions
+
+Actions are Python functions called from Colang flows via execute.
+
+```python
+# actions.py
+from nemoguardrails.actions import action
+@action(is_system_action=True)
+async def check_forbidden_words(context: dict = {}):
+    user_message = context.get("user_message", "").lower()
+    forbidden = ["password", "hack", "exploit"]
+    for word in forbidden:
+        if word in user_message:
+            return {"status": "blocked", "word": word}
+    return {"status": "allowed"}
+```
+
+## Custom actions in action
+
+```bash
+curl -s "https://$NEMO_ROUTE/v1/chat/completions" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "'"$LLM_MODEL_NAME"'",
+    "messages": [{"role":"user","content":"'"$(python3 -c "print(' '.join(['lemon'] * 200))")"'"}],
+    "guardrails": {"config_id": "custom-actions"}
+  }' | jq
+```
+
+should yield something like this:
+
+```json
+{
+  "id": "chatcmpl-812f8a15-6f42-40d6-b091-53c4dc720b03",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "📏 Your message is too long! Please keep your lemon questions concise (under 150 words).",
+        "role": "assistant"
+      }
+    }
+  ],
+  "created": 1776432992,
+  "model": "Mistral-Small-24B-W8A8",
+  "object": "chat.completion",
+  "guardrails": {
+    "config_id": "custom-actions"
+  }
+}
+```
+
+## How it all fits together
+
+```bash
+User message
+  │
+  ▼
+Input Rails (flows from .co files)
+  │── execute actions (actions.py)
+  │── if blocked → bot responds with denial → STOP
+  │
+  ▼
+LLM generates response
+  │
+  ▼
+Output Rails (flows from .co files)
+  │── execute actions (actions.py)
+  │── if blocked → override response
+  │
+  ▼
+Response sent to user
+```
+
+## Using built-in rails (no custom Colang or actions needed) {.scrollable .smaller}
+
+NeMo Guardrails ships with pre-built rails activated purely through config.yaml, e.g. 
+
+- self-check rails — uses the main LLM to evaluate safety:
+
+```yaml
+rails:
+  input:
+    flows:
+      - self check input
+  output:
+    flows:
+      - self check output
+prompts:
+  - task: self_check_input
+    content: |
+      Text should not contain swear words; does this text contain any swear words? Answer [Yes/No]:
+      Instruction: {{ user_input }}
+      Answer [Yes/No]:
+  - task: self_check_output
+    content: |
+      Text should not contain swear words; does this text contain any swear words? Answer [Yes/No]:
+      Output: {{ bot_response }}
+      Answer [Yes/No]:
+```
+
+- content safety rails — uses a dedicated safety model:
+
+```yaml
+models:
+  - type: content_safety
+    engine: openai
+    model: <SAFETY_MODEL_NAME/v1>
+rails:
+  input:
+    flows:
+      - content safety check input $model=content_safety
+  output:
+    flows:
+      - content safety check output $model=content_safety
+```
+
+- regex-based rails — pattern matching, no LLM needed:
+
+```yaml
+rails:
+  config:
+    regex_detection:
+      input:
+        patterns:
+          - "\\d{3}-\\d{2}-\\d{4}"   # block SSNs
+          - "\\bconfidential\\b"      # block keyword
+  input:
+    flows:
+      - regex check input
+```
+
+
+- PII  — using Presidio:
+
+```yaml
+rails:
+  config:
+    sensitive_data_detection:
+      input:
+        entities:
+          - PERSON
+          - EMAIL_ADDRESS
+          - CREDIT_CARD
+  input:
+    flows:
+      - mask sensitive data on input
+  output:
+    flows:
+      - mask sensitive data on output
+```
+
